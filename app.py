@@ -4,40 +4,23 @@ from io import BytesIO
 import unicodedata
 
 # Ρυθμίσεις σελίδας
-st.set_page_config(page_title="Pharma Price Checker", page_icon="💊", layout="wide")
+st.set_page_config(page_title="Σύγκριση Τιμών Φαρμάκων", page_icon="💊", layout="wide")
 
-st.title("💊 Αυτόματη Σύγκριση Τιμών Φαρμάκων")
-st.markdown("Το πρόγραμμα εντοπίζει αυτόματα τα Barcodes (που ξεκινούν από **280**) και συγκρίνει τις τιμές.")
+st.title("💊 Σύγκριση: Παλιά ΧΤ vs Προτεινόμενη ΧΤ")
+st.markdown("""
+Το πρόγραμμα θα διαβάσει τα αρχεία με βάση τις στήλες που δώσατε:
+* **Κλειδί:** `Barcode`
+* **Παλιό:** `Χονδρική Τιμή`
+* **Νέο:** `Προτεινόμενη Χονδρική Τιμή`
+""")
 
 # --- Βοηθητικές Συναρτήσεις ---
 
 def normalize_text(text):
-    """Καθαρίζει τόνους και κεφαλαία για αναζήτηση τίτλων"""
+    """Καθαρίζει τόνους και κεφαλαία"""
     if not isinstance(text, str): return str(text)
     text = text.upper()
     return ''.join(c for c in unicodedata.normalize('NFD', text) if unicodedata.category(c) != 'Mn')
-
-def find_column_by_data_280(df):
-    """Ψάχνει τα ΠΕΡΙΕΧΟΜΕΝΑ για να βρει ποια στήλη έχει Barcodes (280...)"""
-    for col in df.columns:
-        # Παίρνουμε δείγμα 20 εγγραφών (αγνοώντας κενά)
-        sample = df[col].dropna().head(20).astype(str)
-        # Μετράμε πόσα ξεκινούν από '280'
-        matches = sample[sample.str.strip().str.startswith('280')]
-        
-        # Αν πάνω από το 50% του δείγματος ξεκινάει με 280, είναι η στήλη Barcode
-        if len(sample) > 0 and len(matches) / len(sample) > 0.5:
-            return col
-    return None
-
-def find_column_by_name(columns, keywords):
-    """Ψάχνει τον ΤΙΤΛΟ της στήλης"""
-    for col in columns:
-        norm_col = normalize_text(col)
-        for key in keywords:
-            if key in norm_col:
-                return col
-    return None
 
 def load_data(file):
     if file:
@@ -45,6 +28,15 @@ def load_data(file):
             return pd.read_excel(file)
         except Exception as e:
             st.error(f"Σφάλμα αρχείου: {e}")
+    return None
+
+def find_exact_column(columns, target_keywords):
+    """Ψάχνει στήλη που περιέχει τις λέξεις κλειδιά"""
+    for col in columns:
+        norm_col = normalize_text(col)
+        # Ελέγχουμε αν ΟΛΕΣ οι λέξεις κλειδιά υπάρχουν στο όνομα της στήλης
+        if all(normalize_text(k) in norm_col for k in target_keywords):
+            return col
     return None
 
 # --- Upload Files ---
@@ -59,120 +51,134 @@ if old_file and new_file:
 
     if df_old is not None and df_new is not None:
         
-        # --- ΕΞΥΠΝΗ ΑΝΑΓΝΩΡΙΣΗ ΣΤΗΛΩΝ ---
+        # --- ΑΝΑΓΝΩΡΙΣΗ ΣΤΗΛΩΝ ΜΕ ΒΑΣΗ ΤΑ ΟΝΟΜΑΤΑ ΠΟΥ ΕΔΩΣΕΣ ---
         
-        # 1. Βήμα: Βρες το Barcode ψάχνοντας τα δεδομένα (Startswith 280)
-        col_id_old = find_column_by_data_280(df_old)
-        col_id_new = find_column_by_data_280(df_new)
-
-        # Αν δεν βρει 280 (πχ παραφαρμακευτικά), ψάχνει με βάση το όνομα (Barcode/ΕΟΦ)
-        if not col_id_old:
-            col_id_old = find_column_by_name(df_old.columns, ['BARCODE', 'ΕΟΦ', 'ΚΩΔΙΚΟΣ', 'SKU'])
-        if not col_id_new:
-            col_id_new = find_column_by_name(df_new.columns, ['BARCODE', 'ΕΟΦ', 'ΚΩΔΙΚΟΣ', 'SKU'])
-
-        # 2. Βήμα: Βρες Τιμές και Ονόματα με βάση τις επικεφαλίδες
-        keys_name = ['ΠΕΡΙΓΡΑΦΗ', 'ΟΝΟΜΑΣΙΑ', 'ΕΙΔΟΣ', 'NAME', 'DESCR']
-        keys_price = ['ΧΟΝΔΡΙΚΗ', 'ΧΤ', 'ΤΙΜΗ', 'PRICE', 'WHOLESALE']
-
-        col_price_old = find_column_by_name(df_old.columns, keys_price)
-        col_name_new = find_column_by_name(df_new.columns, keys_name)
-        col_price_new = find_column_by_name(df_new.columns, keys_price)
-
-        # Fallbacks (αν όλα αποτύχουν)
-        if not col_id_old: col_id_old = df_old.columns[0]
-        if not col_price_old: col_price_old = df_old.columns[-1]
+        # 1. Barcode (Κλειδί)
+        col_barcode_old = find_exact_column(df_old.columns, ['BARCODE'])
+        col_barcode_new = find_exact_column(df_new.columns, ['BARCODE'])
         
-        if not col_id_new: col_id_new = df_new.columns[0]
-        if not col_name_new: col_name_new = df_new.columns[1] if len(df_new.columns)>1 else df_new.columns[0]
-        if not col_price_new: col_price_new = df_new.columns[-1]
-
-        # Εμφάνιση αποτελεσμάτων αναγνώρισης
-        st.success(f"✅ Ταυτοποίηση: Παλιό Barcode: **{col_id_old}** | Νέο Barcode: **{col_id_new}**")
-
-        # --- ΕΠΕΞΕΡΓΑΣΙΑ ---
-        d1 = df_old[[col_id_old, col_price_old]].copy()
-        d1.columns = ['Key', 'Old_XT']
+        # 2. Όνομα Προϊόντος (Από το νέο αρχείο)
+        col_name = find_exact_column(df_new.columns, ['ΠΡΟΙΟΝ'])
         
-        d2 = df_new[[col_id_new, col_name_new, col_price_new]].copy()
-        d2.columns = ['Key', 'Name', 'New_XT']
+        # 3. Τιμές
+        # Παλιό: "Χονδρική Τιμή"
+        col_price_old = find_exact_column(df_old.columns, ['ΧΟΝΔΡΙΚΗ', 'ΤΙΜΗ']) 
+        # Νέο: "Προτεινόμενη Χονδρική Τιμή"
+        col_price_new = find_exact_column(df_new.columns, ['ΠΡΟΤΕΙΝΟΜΕΝΗ', 'ΧΟΝΔΡΙΚΗ'])
 
-        # Καθαρισμός Τιμών & Barcodes
-        for df_temp in [d1, d2]:
-            t_col = 'Old_XT' if 'Old_XT' in df_temp.columns else 'New_XT'
+        # Έλεγχος αν βρέθηκαν
+        if not col_barcode_old or not col_barcode_new or not col_price_old or not col_price_new:
+            st.error("⚠️ Δεν βρέθηκαν οι στήλες! Βεβαιωθείτε ότι τα Excel έχουν τις ονομασίες: 'Barcode', 'Χονδρική Τιμή', 'Προτεινόμενη Χονδρική Τιμή'.")
+        else:
+            st.success(f"✅ Σύγκριση: **{col_price_old}** (Παλιό) vs **{col_price_new}** (Νέο)")
+
+            # --- ΕΠΕΞΕΡΓΑΣΙΑ ---
+            # Δημιουργία καθαρών DataFrames
+            d1 = df_old[[col_barcode_old, col_price_old]].copy()
+            d1.columns = ['Barcode', 'Old_XT']
             
-            # Καθαρισμός Τιμής
-            if df_temp[t_col].dtype == object:
-                df_temp[t_col] = df_temp[t_col].astype(str).str.replace(',', '.', regex=False)
-                df_temp[t_col] = pd.to_numeric(df_temp[t_col], errors='coerce')
-            df_temp[t_col] = df_temp[t_col].fillna(0)
+            d2 = df_new[[col_barcode_new, col_name, col_price_new]].copy()
+            d2.columns = ['Barcode', 'Name', 'New_XT']
+
+            # Καθαρισμός Τιμών & Barcodes
+            for df_temp in [d1, d2]:
+                t_col = 'Old_XT' if 'Old_XT' in df_temp.columns else 'New_XT'
+                
+                # Τιμές: Αλλαγή , σε . και αριθμός
+                if df_temp[t_col].dtype == object:
+                    df_temp[t_col] = df_temp[t_col].astype(str).str.replace(',', '.', regex=False)
+                    df_temp[t_col] = pd.to_numeric(df_temp[t_col], errors='coerce')
+                df_temp[t_col] = df_temp[t_col].fillna(0)
+                
+                # Barcode: String χωρίς .0
+                df_temp['Barcode'] = df_temp['Barcode'].astype(str).str.strip().str.replace('.0', '', regex=False)
+
+            # Merge
+            merged = pd.merge(d2, d1, on='Barcode', how='left')
+
+            # Υπολογισμοί
+            # Διαφορά (με πρόσημο)
+            merged['Diff_Val'] = merged['New_XT'] - merged['Old_XT']
             
-            # Καθαρισμός Barcode (να είναι string χωρίς κενά)
-            df_temp['Key'] = df_temp['Key'].astype(str).str.strip().str.replace('.0', '', regex=False)
+            # Ποσοστό
+            merged['Diff_Pct'] = merged.apply(
+                lambda x: (x['Diff_Val'] / x['Old_XT'] * 100) if x['Old_XT'] > 0 else 0, axis=1
+            )
 
-        # Merge
-        merged = pd.merge(d2, d1, on='Key', how='left')
-
-        # Υπολογισμοί
-        merged['Diff_Val'] = merged['New_XT'] - merged['Old_XT']
-        
-        # Υπολογισμός % (μόνο αν υπάρχει παλιά τιμή)
-        merged['Diff_Pct'] = merged.apply(
-            lambda x: (x['Diff_Val'] / x['Old_XT'] * 100) if x['Old_XT'] > 0 else 0, axis=1
-        )
-
-        # --- ΤΕΛΙΚΗ ΜΟΡΦΟΠΟΙΗΣΗ (ΕΔΩ ΕΓΙΝΕ Η ΑΛΛΑΓΗ) ---
-        final = merged[['Key', 'Name', 'Old_XT', 'New_XT', 'Diff_Pct', 'Diff_Val']].copy()
-        
-        # Οι νέες ονομασίες που ζήτησες
-        final.columns = ['Barcode', 'Ονομασία', 'ΠΧΤ', 'ΝΧΤ', 'δ%', 'διαφορά']
-        
-        # Rounding
-        cols_to_round = ['ΠΧΤ', 'ΝΧΤ', 'δ%', 'διαφορά']
-        final[cols_to_round] = final[cols_to_round].round(2)
-
-        # --- ΠΡΟΒΟΛΗ ---
-        st.divider()
-        col_res1, col_res2 = st.columns([3, 1])
-        
-        with col_res1:
-            st.subheader("📋 Λίστα Διαφορών")
-            # Δείχνουμε μόνο όσα έχουν διαφορά τιμής != 0
-            changes_only = final[final['διαφορά'] != 0].sort_values(by='διαφορά', key=abs, ascending=False)
+            # --- ΤΕΛΙΚΟΣ ΠΙΝΑΚΑΣ ---
+            final = merged[['Barcode', 'Name', 'Old_XT', 'New_XT', 'Diff_Pct', 'Diff_Val']].copy()
+            final.columns = ['Barcode', 'Ονομασία', 'ΠΧΤ', 'ΝΧΤ', 'δ%', 'Διαφορά']
             
-            if changes_only.empty:
-                st.warning("Δεν βρέθηκαν αλλαγές τιμών!")
-                st.dataframe(final.head())
-            else:
-                st.dataframe(changes_only.head(50)) # Δείχνουμε τις 50 πρώτες
+            # Στρογγυλοποίηση
+            final['ΠΧΤ'] = final['ΠΧΤ'].round(2)
+            final['ΝΧΤ'] = final['ΝΧΤ'].round(2)
+            final['δ%'] = final['δ%'].round(2)
+            final['Διαφορά'] = final['Διαφορά'].round(2)
 
-        with col_res2:
-            st.subheader("📊 Σύνοψη")
-            increases = final[final['διαφορά'] > 0].shape[0]
-            decreases = final[final['διαφορά'] < 0].shape[0]
-            st.metric("Αυξήσεις", increases)
-            st.metric("Μειώσεις", decreases)
-
-        # --- EXPORT ---
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            final.to_excel(writer, index=False, sheet_name='PriceChanges')
-            wb = writer.book
-            ws = writer.sheets['PriceChanges']
+            # --- ΠΡΟΒΟΛΗ ---
+            st.divider()
             
-            fmt_eur = wb.add_format({'num_format': '#,##0.00€'})
-            fmt_pct = wb.add_format({'num_format': '0.00'})
+            # Φιλτράρισμα για εμφάνιση μόνο των αλλαγών
+            changes = final[final['Διαφορά'] != 0].sort_values(by='Διαφορά', ascending=False)
             
-            ws.set_column('A:A', 16) # Barcode
-            ws.set_column('B:B', 50) # Ονομασία
-            ws.set_column('C:D', 12, fmt_eur) # ΠΧΤ, ΝΧΤ
-            ws.set_column('E:E', 10, fmt_pct) # δ%
-            ws.set_column('F:F', 12, fmt_eur) # διαφορά
+            st.subheader(f"📋 Βρέθηκαν {len(changes)} αλλαγές τιμών")
+            
+            # Εμφάνιση με custom styling στο Streamlit
+            def color_diff(val):
+                color = 'green' if val < 0 else 'red' if val > 0 else 'black'
+                return f'color: {color}'
 
-        st.download_button(
-            label="📥 ΛΗΨΗ EXCEL",
-            data=buffer.getvalue(),
-            file_name="pharmacy_prices_diff.xlsx",
-            mime="application/vnd.ms-excel",
-            type="primary"
-        )
+            st.dataframe(
+                changes.head(50).style.format({
+                    'ΠΧΤ': '{:.2f}€',
+                    'ΝΧΤ': '{:.2f}€',
+                    'δ%': '{:+.2f}%',
+                    'Διαφορά': '{:+.2f}€'
+                }).applymap(color_diff, subset=['Διαφορά', 'δ%'])
+            )
+
+            # --- EXCEL EXPORT (Με ειδική μορφοποίηση) ---
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                final.to_excel(writer, index=False, sheet_name='PriceChanges')
+                wb = writer.book
+                ws = writer.sheets['PriceChanges']
+                
+                # Formats
+                fmt_eur = wb.add_format({'num_format': '#,##0.00€'})
+                
+                # ΕΙΔΙΚΟ FORMAT για να δείχνει + ή - (π.χ. +1.50€ ή -2.30€)
+                fmt_diff_eur = wb.add_format({'num_format': '+#,##0.00€;-#,##0.00€;0.00€', 'bold': True})
+                fmt_diff_pct = wb.add_format({'num_format': '+0.00%;-0.00%;0.00%'})
+                
+                # Στήλες
+                ws.set_column('A:A', 16) # Barcode
+                ws.set_column('B:B', 50) # Ονομασία
+                ws.set_column('C:D', 12, fmt_eur) # ΠΧΤ, ΝΧΤ
+                ws.set_column('E:E', 10, fmt_diff_pct) # δ%
+                ws.set_column('F:F', 12, fmt_diff_eur) # Διαφορά (με πρόσημο)
+
+                # Conditional Formatting στο Excel (Πράσινο για μείωση, Κόκκινο για αύξηση)
+                # Προσοχή: Στα φάρμακα η αύξηση κόστους είναι αρνητική (κόκκινο), η μείωση θετική (πράσινο) ή το αντίθετο;
+                # Συνήθως αύξηση τιμής = Κόκκινο, Μείωση = Πράσινο.
+                
+                ws.conditional_format('F2:F1048576', {
+                    'type': 'cell',
+                    'criteria': '>',
+                    'value': 0,
+                    'format': wb.add_format({'font_color': '#9C0006', 'bg_color': '#FFC7CE'}) # Red for increase
+                })
+                ws.conditional_format('F2:F1048576', {
+                    'type': 'cell',
+                    'criteria': '<',
+                    'value': 0,
+                    'format': wb.add_format({'font_color': '#006100', 'bg_color': '#C6EFCE'}) # Green for decrease
+                })
+
+            st.download_button(
+                label="📥 ΛΗΨΗ EXCEL (με χρώματα και πρόσημα)",
+                data=buffer.getvalue(),
+                file_name="pharmacy_price_comparison.xlsx",
+                mime="application/vnd.ms-excel",
+                type="primary"
+            )
