@@ -59,12 +59,11 @@ def load_excel(file):
 def process_comparison(df_old, df_new):
     """Εκτελεί όλη τη λογική σύγκρισης"""
     
-    # 1. Εντοπισμός Στηλών (Με ΑΥΣΤΗΡΟ φίλτρο για να μην πάρει Λιανικές)
+    # 1. Εντοπισμός Στηλών
     col_barcode_old = find_exact_column(df_old.columns, ['BARCODE'])
     col_barcode_new = find_exact_column(df_new.columns, ['BARCODE'])
     col_name = find_exact_column(df_new.columns, ['ΠΡΟΙΟΝ'])
     
-    # Ψάχνουμε Χονδρική, ΑΠΑΓΟΡΕΥΟΥΜΕ τη λέξη Λιανική
     col_price_old = find_wholesale_column(df_old.columns, 
                                         must_have=['ΧΟΝΔΡΙΚΗ', 'ΤΙΜΗ'], 
                                         must_not_have=['ΛΙΑΝΙΚΗ', 'RETAIL'])
@@ -73,17 +72,14 @@ def process_comparison(df_old, df_new):
                                         must_have=['ΠΡΟΤΕΙΝΟΜΕΝΗ', 'ΧΟΝΔΡΙΚΗ'], 
                                         must_not_have=['ΛΙΑΝΙΚΗ', 'RETAIL'])
 
-    # Fallback: Αν δεν βρει 'ΠΡΟΤΕΙΝΟΜΕΝΗ', ψάχνει σκέτο 'Χονδρική' (χωρίς Λιανική)
     if not col_price_new:
         col_price_new = find_wholesale_column(df_new.columns, 
                                             must_have=['ΧΟΝΔΡΙΚΗ'], 
                                             must_not_have=['ΛΙΑΝΙΚΗ'])
 
-    # Έλεγχος
     if not (col_barcode_old and col_barcode_new and col_price_old and col_price_new):
-        return None, "Δεν βρέθηκαν οι στήλες. Βεβαιωθείτε ότι υπάρχουν: Barcode, Χονδρική Τιμή (όχι Λιανική)."
+        return None, "Δεν βρέθηκαν οι στήλες Barcode ή Χονδρικής Τιμής."
 
-    # Εμφάνιση στο UI ποιες στήλες επιλέχθηκαν (για επιβεβαίωση χρήστη)
     st.info(f"✅ Σύγκριση: **{col_price_old}** (Παλιό) vs **{col_price_new}** (Νέο)")
 
     # 2. Προετοιμασία DataFrames
@@ -97,16 +93,12 @@ def process_comparison(df_old, df_new):
     for df_temp in [d1, d2]:
         t_col = 'Old_XT' if 'Old_XT' in df_temp.columns else 'New_XT'
         
-        # Καθαρισμός Τιμής
         if df_temp[t_col].dtype == object:
             df_temp[t_col] = df_temp[t_col].astype(str).str.replace(',', '.', regex=False)
             df_temp[t_col] = pd.to_numeric(df_temp[t_col], errors='coerce')
         df_temp[t_col] = df_temp[t_col].fillna(0)
         
-        # Καθαρισμός Barcode
         df_temp['Barcode'] = df_temp['Barcode'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
-
-        # Αφαίρεση διπλοεγγραφών
         df_temp.drop_duplicates(subset=['Barcode'], keep='first', inplace=True)
 
     # 4. Ένωση
@@ -118,74 +110,86 @@ def process_comparison(df_old, df_new):
         lambda x: (x['Diff_Val'] / x['Old_XT'] * 100) if x['Old_XT'] > 0 else 0, axis=1
     )
 
-    # 6. Τελική Μορφή (Η σειρά που ζήτησες)
-    # Barcode | Ονομα φαρμακου | Παλιά ΧΤ | Νέα ΧΤ | Διαφορά | δ%
+    # 6. Τελική Μορφή
     final = merged[['Barcode', 'Name', 'Old_XT', 'New_XT', 'Diff_Val', 'Diff_Pct']].copy()
     final.columns = ['Barcode', 'Όνομα Φαρμάκου', 'Παλιά ΧΤ', 'Νέα ΧΤ', 'Διαφορά', 'δ%']
     
-    # Στρογγυλοποίηση
     for c in ['Παλιά ΧΤ', 'Νέα ΧΤ', 'Διαφορά', 'δ%']:
         final[c] = final[c].round(2)
 
     return final, None
 
-# --- PDF GENERATOR ---
+# --- PDF GENERATOR (Fixed with fpdf2) ---
 
 def create_pdf_file(df):
-    font_path = "Roboto-Regular.ttf"
+    """Δημιουργεί PDF χρησιμοποιώντας fpdf2 και επιστρέφει το path"""
+    
+    font_filename = "Roboto-Regular.ttf"
+    font_path = os.path.join(os.getcwd(), font_filename)
+    
+    # Λήψη γραμματοσειράς (Απαραίτητη για Ελληνικά)
     if not os.path.exists(font_path):
         try:
             url = "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf"
             r = requests.get(url, allow_redirects=True)
-            with open(font_path, 'wb') as f: f.write(r.content)
-        except: pass 
+            with open(font_path, 'wb') as f:
+                f.write(r.content)
+        except Exception as e:
+            st.error(f"Σφάλμα λήψης γραμματοσειράς: {e}")
+            return None
 
+    # Έναρξη PDF
     pdf = FPDF('L', 'mm', 'A4')
     pdf.add_page()
+    
+    # Προσθήκη Font (fpdf2 syntax)
     try:
-        pdf.add_font('Roboto', '', font_path, uni=True)
-        pdf.set_font('Roboto', '', 8)
-    except:
-        pdf.set_font('Arial', '', 8)
+        pdf.add_font("Roboto", fname=font_path)
+        pdf.set_font("Roboto", size=8)
+    except Exception as e:
+        st.error(f"Η γραμματοσειρά δεν φορτώθηκε σωστά. Το PDF δεν μπορεί να δημιουργηθεί. ({e})")
+        return None
 
-    pdf.set_font_size(14)
-    pdf.cell(0, 10, f'Λίστα Αλλαγών Τιμών ({len(df)} είδη)', 0, 1, 'C')
+    # Header
+    pdf.set_font("Roboto", size=14)
+    pdf.cell(0, 10, text=f'Λίστα Αλλαγών Τιμών ({len(df)} είδη)', align='C', new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
 
-    pdf.set_font_size(8)
+    # Table Header
+    pdf.set_font("Roboto", size=8)
     pdf.set_fill_color(220, 220, 220)
     
-    # Στήλες και Πλάτη (Total ~275)
-    # Barcode(30) Name(110) Old(25) New(25) Diff(25) Pct(20)
+    # Στήλες
     w_bar, w_name, w_pr, w_diff, w_pct = 30, 110, 25, 25, 20
     
-    # Header
-    pdf.cell(w_bar, 8, 'Barcode', 1, 0, 'C', 1)
-    pdf.cell(w_name, 8, 'Όνομα Φαρμάκου', 1, 0, 'C', 1)
-    pdf.cell(w_pr, 8, 'Παλιά ΧΤ', 1, 0, 'C', 1)
-    pdf.cell(w_pr, 8, 'Νέα ΧΤ', 1, 0, 'C', 1)
-    pdf.cell(w_diff, 8, 'Διαφορά', 1, 0, 'C', 1)
-    pdf.cell(w_pct, 8, 'δ%', 1, 1, 'C', 1)
+    # Κεφαλίδες
+    pdf.cell(w_bar, 8, text='Barcode', border=1, align='C', fill=True)
+    pdf.cell(w_name, 8, text='Όνομα Φαρμάκου', border=1, align='C', fill=True)
+    pdf.cell(w_pr, 8, text='Παλιά ΧΤ', border=1, align='C', fill=True)
+    pdf.cell(w_pr, 8, text='Νέα ΧΤ', border=1, align='C', fill=True)
+    pdf.cell(w_diff, 8, text='Διαφορά', border=1, align='C', fill=True)
+    pdf.cell(w_pct, 8, text='δ%', border=1, align='C', fill=True, new_x="LMARGIN", new_y="NEXT")
 
     total_rows = len(df)
     progress_bar = st.progress(0)
     
+    # Γέμισμα γραμμών
     for i, (_, row) in enumerate(df.iterrows()):
         if i % 50 == 0: progress_bar.progress(min(i / total_rows, 1.0))
             
         barcode = str(row['Barcode'])
-        name = str(row['Όνομα Φαρμάκου'])[:60]
+        name = str(row['Όνομα Φαρμάκου'])[:60] # Κόψιμο για να χωράει
         pxt = f"{row['Παλιά ΧΤ']:.2f}"
         nxt = f"{row['Νέα ΧΤ']:.2f}"
         dval = f"{row['Διαφορά']:+.2f}"
         dpct = f"{row['δ%']:+.1f}%"
 
-        pdf.cell(w_bar, 6, barcode, 1, 0, 'C')
-        pdf.cell(w_name, 6, name, 1, 0, 'L') 
-        pdf.cell(w_pr, 6, pxt, 1, 0, 'C')
-        pdf.cell(w_pr, 6, nxt, 1, 0, 'C')
-        pdf.cell(w_diff, 6, dval, 1, 0, 'C') # Διαφορά
-        pdf.cell(w_pct, 6, dpct, 1, 1, 'C') # Ποσοστό
+        pdf.cell(w_bar, 6, text=barcode, border=1, align='C')
+        pdf.cell(w_name, 6, text=name, border=1, align='L') 
+        pdf.cell(w_pr, 6, text=pxt, border=1, align='C')
+        pdf.cell(w_pr, 6, text=nxt, border=1, align='C')
+        pdf.cell(w_diff, 6, text=dval, border=1, align='C')
+        pdf.cell(w_pct, 6, text=dpct, border=1, align='C', new_x="LMARGIN", new_y="NEXT")
     
     progress_bar.empty() 
     output_filename = "report_temp.pdf"
@@ -209,7 +213,7 @@ if old_file and new_file:
         if error_msg:
             st.error(f"⚠️ {error_msg}")
         else:
-            # Φίλτρο αλλαγών
+            # Φίλτρο
             changes_only = final_df[final_df['Διαφορά'] != 0].copy()
             changes_only = changes_only.sort_values(by='Διαφορά', key=abs, ascending=False)
             
@@ -246,14 +250,12 @@ if old_file and new_file:
                 fmt_eur = wb.add_format({'num_format': '#,##0.00€', 'align': 'center', 'valign': 'vcenter'})
                 fmt_diff = wb.add_format({'num_format': '+#,##0.00€;-#,##0.00€;0.00€', 'align': 'center', 'valign': 'vcenter', 'bold': True})
                 
-                # Στήλες: Barcode(A), Name(B), Old(C), New(D), Diff(E), Pct(F)
                 ws.set_column('A:A', 16, fmt_center)
                 ws.set_column('B:B', 50, fmt_center)
                 ws.set_column('C:D', 12, fmt_eur)
                 ws.set_column('E:E', 12, fmt_diff)
                 ws.set_column('F:F', 10, fmt_center)
 
-                # Χρώματα στη Διαφορά (Στήλη E)
                 ws.conditional_format('E2:E50000', {'type': 'cell', 'criteria': '>', 'value': 0, 'format': wb.add_format({'font_color': '#9C0006', 'bg_color': '#FFC7CE'})})
                 ws.conditional_format('E2:E50000', {'type': 'cell', 'criteria': '<', 'value': 0, 'format': wb.add_format({'font_color': '#006100', 'bg_color': '#C6EFCE'})})
 
@@ -264,10 +266,8 @@ if old_file and new_file:
             with col_pdf:
                 if st.button("📕 Δημιουργία PDF"):
                     with st.spinner("Γίνεται δημιουργία PDF..."):
-                        try:
-                            pdf_file = create_pdf_file(changes_only)
-                            with open(pdf_file, "rb") as f:
+                        pdf_path = create_pdf_file(changes_only)
+                        if pdf_path:
+                            with open(pdf_path, "rb") as f:
                                 st.download_button("⬇️ Κατέβασμα PDF", f.read(), "price_changes.pdf", "application/pdf")
-                            os.remove(pdf_file)
-                        except Exception as e:
-                            st.error(f"Σφάλμα PDF: {e}")
+                            os.remove(pdf_path)
