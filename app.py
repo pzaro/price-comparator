@@ -1,111 +1,145 @@
 import streamlit as st
 import pandas as pd
+from io import BytesIO
 
 # Ρυθμίσεις σελίδας
-st.set_page_config(page_title="Σύγκριση Τιμοκαταλόγων", page_icon="📊")
+st.set_page_config(page_title="Έλεγχος Τιμών Φαρμάκων", page_icon="💊", layout="wide")
 
-st.title("📊 Σύγκριση Δελτίων Τιμών")
-st.write("Ανέβασε το παλιό και το νέο δελτίο τιμών (Excel) για να δεις τις διαφορές.")
+st.title("💊 Σύγκριση Τιμών Φαρμάκων (Barcode/ΕΟΦ)")
+st.markdown("""
+Ανεβάστε τα δύο αρχεία Excel (Παλιό & Νέο).  
+Το πρόγραμμα θα ταιριάξει τα είδη με βάση το **Barcode ή τον Κωδικό ΕΟΦ** και θα υπολογίσει τις διαφορές στην **Χονδρική Τιμή (ΧΤ)**.
+""")
 
-# Συνάρτηση φόρτωσης αρχείων
 def load_data(file):
     if file is not None:
         try:
-            # Διαβάζουμε το excel
-            df = pd.read_excel(file)
-            return df
+            return pd.read_excel(file)
         except Exception as e:
-            st.error(f"Error loading file: {e}")
+            st.error(f"Σφάλμα στο αρχείο: {e}")
             return None
     return None
 
-# 1. Upload Αρχείων
-col1, col2 = st.columns(2)
-with col1:
-    old_file = st.file_uploader("📂 Ανέβασε το ΠΑΛΙΟ δελτίο (.xlsx)", type=['xlsx', 'xls'])
-with col2:
-    new_file = st.file_uploader("📂 Ανέβασε το ΝΕΟ δελτίο (.xlsx)", type=['xlsx', 'xls'])
+# Upload Section
+c1, c2 = st.columns(2)
+with c1:
+    old_file = st.file_uploader("📂 ΠΑΛΙΟ Δελτίο (.xlsx)", type=['xlsx', 'xls'], key="old")
+with c2:
+    new_file = st.file_uploader("📂 ΝΕΟ Δελτίο (.xlsx)", type=['xlsx', 'xls'], key="new")
 
 if old_file and new_file:
-    # Φόρτωση των DataFrames
     df_old = load_data(old_file)
     df_new = load_data(new_file)
 
     if df_old is not None and df_new is not None:
         st.divider()
-        st.subheader("⚙️ Ρυθμίσεις Στήλων")
+        st.subheader("⚙️ Αντιστοίχιση Στηλών")
+        st.info("Επέλεξε ποιες στήλες αντιστοιχούν στα δεδομένα σου.")
+
+        cols_old = df_old.columns.tolist()
+        cols_new = df_new.columns.tolist()
+
+        # Επιλογές για το ταίριασμα
+        col1, col2, col3 = st.columns(3)
         
-        # Επιλογή στηλών από τον χρήστη (ώστε να δουλεύει με οποιοδήποτε format)
-        col_list_old = df_old.columns.tolist()
-        col_list_new = df_new.columns.tolist()
-
-        c1, c2, c3, c4 = st.columns(4)
+        with col1:
+            st.markdown("**1. Κωδικός Ταυτοποίησης**")
+            # Ο χρήστης επιλέγει αν θα ταιριάξει με Barcode ή ΕΟΦ
+            key_old = st.selectbox("Στήλη Barcode/ΕΟΦ (Παλιό)", cols_old, index=0)
+            key_new = st.selectbox("Στήλη Barcode/ΕΟΦ (Νέο)", cols_new, index=0)
         
-        # Επιλογή Κωδικού και Τιμής για το Παλιό
-        key_old = c1.selectbox("Κωδικός (Παλιό)", col_list_old, index=0)
-        price_old_col = c2.selectbox("Τιμή (Παλιό)", col_list_old, index=1 if len(col_list_old)>1 else 0)
-        
-        # Επιλογή Κωδικού και Τιμής για το Νέο
-        key_new = c3.selectbox("Κωδικός (Νέο)", col_list_new, index=0)
-        price_new_col = c4.selectbox("Τιμή (Νέο)", col_list_new, index=1 if len(col_list_new)>1 else 0)
+        with col2:
+            st.markdown("**2. Ονομασία Προϊόντος**")
+            # Παίρνουμε την ονομασία από το Νέο αρχείο συνήθως
+            name_col = st.selectbox("Στήλη Ονομασίας (από Νέο αρχείο)", cols_new, index=1 if len(cols_new)>1 else 0)
+            
+        with col3:
+            st.markdown("**3. Χονδρική Τιμή (ΧΤ)**")
+            price_old_col = st.selectbox("Στήλη ΧΤ (Παλιό)", cols_old, index=len(cols_old)-1)
+            price_new_col = st.selectbox("Στήλη ΧΤ (Νέο)", cols_new, index=len(cols_new)-1)
 
-        if st.button("🚀 Σύγκριση Τιμών"):
-            # Προετοιμασία δεδομένων (κρατάμε μόνο τα απαραίτητα και μετονομάζουμε)
-            df_old_clean = df_old[[key_old, price_old_col]].rename(columns={key_old: 'SKU', price_old_col: 'Old_Price'})
-            df_new_clean = df_new[[key_new, price_new_col]].rename(columns={key_new: 'SKU', price_new_col: 'New_Price'})
+        if st.button("🚀 Ανάλυση & Σύγκριση"):
+            # Προετοιμασία DataFrames
+            # Κρατάμε μόνο τα απαραίτητα και μετονομάζουμε για κοινή χρήση
+            d1 = df_old[[key_old, price_old_col]].copy()
+            d1.columns = ['Key', 'Old_XT']
+            
+            d2 = df_new[[key_new, name_col, price_new_col]].copy()
+            d2.columns = ['Key', 'Name', 'New_XT']
 
-            # Μετατροπή σε αριθμούς (σε περίπτωση που έχουν € ή είναι text)
-            df_old_clean['Old_Price'] = pd.to_numeric(df_old_clean['Old_Price'], errors='coerce').fillna(0)
-            df_new_clean['New_Price'] = pd.to_numeric(df_new_clean['New_Price'], errors='coerce').fillna(0)
+            # Καθαρισμός Τιμών (μετατροπή σε αριθμούς, αφαίρεση συμβόλων € αν υπάρχουν)
+            for df_temp in [d1, d2]:
+                col_to_fix = 'Old_XT' if 'Old_XT' in df_temp.columns else 'New_XT'
+                # Αν είναι string, αντικαθιστούμε κόμμα με τελεία και αφαιρούμε γράμματα
+                if df_temp[col_to_fix].dtype == object:
+                     df_temp[col_to_fix] = df_temp[col_to_fix].astype(str).str.replace(',', '.', regex=False)
+                     df_temp[col_to_fix] = pd.to_numeric(df_temp[col_to_fix], errors='coerce')
+                
+                df_temp[col_to_fix] = df_temp[col_to_fix].fillna(0)
 
-            # Ένωση των δύο αρχείων (VLOOKUP logic)
-            merged = pd.merge(df_new_clean, df_old_clean, on='SKU', how='left')
+            # Merge (VLOOKUP) - Left join στο Νέο αρχείο για να δούμε τι άλλαξε στα τρέχοντα είδη
+            merged = pd.merge(d2, d1, on='Key', how='left')
 
             # Υπολογισμοί
-            # Αριθμητική διαφορά (Νέα Τιμή - Παλιά Τιμή)
-            merged['Diff_Euro'] = merged['New_Price'] - merged['Old_Price']
+            merged['Diff_Val'] = merged['New_XT'] - merged['Old_XT']
             
-            # Ποσοστιαία διαφορά
-            merged['Diff_Percent'] = (merged['Diff_Euro'] / merged['Old_Price']) * 100
+            # Υπολογισμός ποσοστού (αποφυγή διαίρεσης με το 0)
+            merged['Diff_Pct'] = merged.apply(
+                lambda x: (x['Diff_Val'] / x['Old_XT'] * 100) if x['Old_XT'] > 0 else 0, axis=1
+            )
+
+            # Φιλτράρισμα: Κρατάμε μόνο όσα έχουν διαφορά τιμής (προαιρετικό - εδώ τα κρατάμε όλα αλλά σορτάρουμε τις αλλαγές)
+            # Ή αν θέλεις ΜΟΝΟ τις αλλαγές, ξε-σχολίασε την επόμενη γραμμή:
+            # merged = merged[merged['Diff_Val'] != 0]
+
+            # Μορφοποίηση τελικού πίνακα για εξαγωγή
+            final_df = merged[['Key', 'Name', 'Old_XT', 'New_XT', 'Diff_Pct', 'Diff_Val']].copy()
+            final_df.columns = ['Barcode', 'Ονομασία Προϊόντος', 'Παλιά ΧΤ', 'Νέα ΧΤ', 'Δ%', 'Διαφορά']
+
+            # Rounding για εμφάνιση
+            final_df['Παλιά ΧΤ'] = final_df['Παλιά ΧΤ'].round(2)
+            final_df['Νέα ΧΤ'] = final_df['Νέα ΧΤ'].round(2)
+            final_df['Δ%'] = final_df['Δ%'].round(2)
+            final_df['Διαφορά'] = final_df['Διαφορά'].round(2)
+
+            # --- ΣΤΑΤΙΣΤΙΚΑ ---
+            st.divider()
+            st.subheader("📊 Σύνοψη Αλλαγών")
+            increases = final_df[final_df['Διαφορά'] > 0].shape[0]
+            decreases = final_df[final_df['Διαφορά'] < 0].shape[0]
+            stable = final_df[final_df['Διαφορά'] == 0].shape[0]
             
-            # Καθαρισμός απείρων (αν η παλιά τιμή ήταν 0)
-            merged['Diff_Percent'] = merged['Diff_Percent'].fillna(0).replace([float('inf'), -float('inf')], 0)
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Αυξήσεις", increases, delta_color="inverse")
+            m2.metric("Μειώσεις", decreases, delta_color="inverse")
+            m3.metric("Αμετάβλητα", stable)
 
-            # Δημιουργία κειμένου μορφοποίησης που ζήτησες: π.χ. "-1,50 ευρώ -7%"
-            def format_diff(row):
-                # Αν δεν υπάρχει διαφορά ή είναι νέο προϊόν
-                if pd.isna(row['Old_Price']) or row['Old_Price'] == 0:
-                    return "Νέο Είδος"
-                
-                euro_sign = "" if row['Diff_Euro'] < 0 else "+"
-                pct_sign = "" if row['Diff_Percent'] < 0 else "+"
-                
-                return f"{euro_sign}{row['Diff_Euro']:.2f}€  {pct_sign}{row['Diff_Percent']:.1f}%"
+            # Προβολή
+            st.write("Προεπισκόπηση λίστας (Top 10 αλλαγές):")
+            # Δείχνουμε πρώτα αυτά που έχουν τη μεγαλύτερη διαφορά
+            st.dataframe(final_df.sort_values(by='Διαφορά', ascending=False).head(10))
 
-            merged['Report'] = merged.apply(format_diff, axis=1)
-
-            # Εμφάνιση αποτελεσμάτων
-            st.success("Η σύγκριση ολοκληρώθηκε!")
-            
-            # Προβολή δείγματος
-            st.write("Προεπισκόπηση αποτελεσμάτων:")
-            st.dataframe(merged[['SKU', 'Old_Price', 'New_Price', 'Report']].head())
-
-            # Download Button
-            # Εξάγουμε όλα τα δεδομένα σε νέο Excel
-            output_filename = "price_comparison_results.xlsx"
-            
-            # Χρησιμοποιούμε BytesIO για να γράψουμε το excel στη μνήμη
-            from io import BytesIO
+            # EXCEL DOWNLOAD
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                merged.to_excel(writer, index=False, sheet_name='Sheet1')
+                final_df.to_excel(writer, index=False, sheet_name='PriceChanges')
                 
-            download_data = buffer.getvalue()
+                # Formatting στο Excel (ωραίο styling)
+                workbook = writer.book
+                worksheet = writer.sheets['PriceChanges']
+                money_fmt = workbook.add_format({'num_format': '#,##0.00€'})
+                pct_fmt = workbook.add_format({'num_format': '0.00%'})
+                
+                # Ορίζουμε το πλάτος των στηλών
+                worksheet.set_column('A:A', 15) # Barcode
+                worksheet.set_column('B:B', 40) # Name
+                worksheet.set_column('C:D', 12, money_fmt) # XT Columns
+                worksheet.set_column('E:E', 10, pct_fmt) # % Diff (Προσοχή: εδώ είναι αριθμός πχ 5.00, αν θες excel % πρέπει να διαιρέσεις με 100)
+                worksheet.set_column('F:F', 12, money_fmt) # Value Diff
 
             st.download_button(
-                label="📥 Κατέβασε το Excel με τις διαφορές",
-                data=download_data,
-                file_name=output_filename,
+                label="📥 Κατέβασε τη λίστα (.xlsx)",
+                data=buffer.getvalue(),
+                file_name="pharmacy_price_changes.xlsx",
                 mime="application/vnd.ms-excel"
             )
