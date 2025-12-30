@@ -4,4 +4,3 @@ openpyxl
 xlsxwriter
 fpdf
 requests
-matplotlib
