@@ -2,5 +2,5 @@ streamlit
 pandas
 openpyxl
 xlsxwriter
-fpdf
+fpdf2
 requests
